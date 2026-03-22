@@ -1,4 +1,6 @@
 #!/bin/sh
+# Merge legacy p10+p11 into one ext4 /overlay; use p1 as /backup (see /etc/config/fstab).
+# sysupgrade -n clears mmcblk0p10 in platform.sh so SquashFS defaults are not masked by the old overlay.
 
 . /lib/functions/system.sh
 
