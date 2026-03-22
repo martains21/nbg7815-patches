@@ -1,0 +1,233 @@
+#!/bin/sh
+
+. /lib/functions/system.sh
+
+BOARD="$(board_name)"
+DISK="/dev/mmcblk0"
+P10="${DISK}p10"
+P11="${DISK}p11"
+P1="${DISK}p1"
+EXPECTED_P10_START="307234"
+EXPECTED_P10_END="7405534"
+CHANGED=0
+NEEDS_OVERLAY_MIGRATION=0
+TMP_OVERLAY_MNT="/tmp/nbg7815-new-overlay"
+REBOOT_REQUIRED=0
+REBOOT_MARKER="/tmp/nbg7815-reboot-required"
+
+log() {
+	logger -t nbg7815-storage "$*"
+}
+
+partition_field() {
+	local dev="$1"
+	local field="$2"
+
+	fdisk -l "$DISK" 2>/dev/null | awk -v dev="$dev" -v field="$field" '
+		$1 == dev {
+			if (field == "start") print $2;
+			else if (field == "end") print $3;
+			else if (field == "blocks") print $4;
+			exit
+		}
+	'
+}
+
+fs_type() {
+	blkid -o value -s TYPE "$1" 2>/dev/null
+}
+
+is_mounted() {
+	local target="$1"
+
+	grep -qs " $target " /proc/mounts
+}
+
+cleanup_temp_mount() {
+	if is_mounted "$TMP_OVERLAY_MNT"; then
+		umount -l "$TMP_OVERLAY_MNT" 2>/dev/null
+	fi
+	rmdir "$TMP_OVERLAY_MNT" 2>/dev/null
+}
+
+trap cleanup_temp_mount EXIT INT TERM
+
+mount_source() {
+	local target="$1"
+
+	awk -v target="$target" '$2 == target { print $1; exit }' /proc/mounts
+}
+
+recreate_p10() {
+	log "recreating p10 as merged overlay partition"
+
+	fdisk "$DISK" <<'EOF'
+d
+11
+d
+10
+n
+10
+307234
+7405534
+w
+EOF
+}
+
+migrate_overlay() {
+	[ -b "$P10" ] || return 1
+	[ -d /overlay ] || return 1
+
+	cleanup_temp_mount
+	mkdir -p "$TMP_OVERLAY_MNT" || return 1
+	if ! is_mounted "$TMP_OVERLAY_MNT"; then
+		mount -t ext4 "$P10" "$TMP_OVERLAY_MNT" || return 1
+	fi
+
+	log "migrating current overlay contents to $P10"
+	cp -a /overlay/. "$TMP_OVERLAY_MNT"/ || return 1
+	cleanup_migrated_overlay || return 1
+	cleanup_extroot_markers || return 1
+	sync
+	cleanup_temp_mount
+	return 0
+}
+
+cleanup_migrated_overlay() {
+	local modules_dir apk_pkg_dir opkg_info_dir
+	local overlay_cfg_dir root_cfg_dir
+
+	modules_dir="$TMP_OVERLAY_MNT/upper/lib/modules"
+	apk_pkg_dir="$TMP_OVERLAY_MNT/upper/lib/apk/packages"
+	opkg_info_dir="$TMP_OVERLAY_MNT/upper/usr/lib/opkg/info"
+	overlay_cfg_dir="$TMP_OVERLAY_MNT/upper/etc/config"
+	root_cfg_dir="$TMP_OVERLAY_MNT/etc/config"
+
+	if [ -d "$modules_dir" ]; then
+		log "removing migrated kernel modules from overlay"
+		rm -rf "$modules_dir" || return 1
+	fi
+
+	if [ -d "$apk_pkg_dir" ]; then
+		log "removing migrated apk kmod package metadata from overlay"
+		find "$apk_pkg_dir" -type f -name 'kmod-*' -delete || return 1
+	fi
+
+	if [ -d "$opkg_info_dir" ]; then
+		log "removing migrated legacy opkg kmod package metadata from overlay"
+		find "$opkg_info_dir" -type f -name 'kmod-*' -delete || return 1
+	fi
+
+	if [ -d "$overlay_cfg_dir" ]; then
+		log "removing migrated overlay UCI configs to prefer new ROM defaults"
+		find "$overlay_cfg_dir" -mindepth 1 -maxdepth 1 -type f -delete || return 1
+	fi
+
+	if [ -d "$root_cfg_dir" ]; then
+		log "removing migrated root UCI configs to prefer new ROM defaults"
+		find "$root_cfg_dir" -mindepth 1 -maxdepth 1 -type f -delete || return 1
+	fi
+
+	return 0
+}
+
+cleanup_extroot_markers() {
+	local root_etc upper_etc
+
+	root_etc="$TMP_OVERLAY_MNT/etc"
+	upper_etc="$TMP_OVERLAY_MNT/upper/etc"
+
+	mkdir -p "$root_etc" || return 1
+	rm -f "$root_etc/.extroot-uuid"
+	touch "$root_etc/.extroot-default" || return 1
+
+	if [ -d "$upper_etc" ]; then
+		rm -f "$upper_etc/.extroot-uuid"
+	fi
+
+	return 0
+}
+
+prepare_extroot() {
+	local current_overlay
+	local upper_has_data
+
+	[ -b "$P10" ] || return 1
+
+	cleanup_temp_mount
+	mkdir -p "$TMP_OVERLAY_MNT" || return 1
+	if ! is_mounted "$TMP_OVERLAY_MNT"; then
+		mount -t ext4 "$P10" "$TMP_OVERLAY_MNT" || return 1
+	fi
+
+	cleanup_migrated_overlay || return 1
+	cleanup_extroot_markers || return 1
+
+	current_overlay="$(mount_source /overlay)"
+	if [ "$current_overlay" = "$P10" ]; then
+		cleanup_temp_mount
+		return 0
+	fi
+
+	log "overlay is still on '$current_overlay', preparing reboot into $P10-backed extroot"
+	CHANGED=1
+	REBOOT_REQUIRED=1
+
+	upper_has_data="$(find "$TMP_OVERLAY_MNT/upper" -mindepth 1 -print -quit 2>/dev/null)"
+	if [ -z "$upper_has_data" ]; then
+		log "overlay is not on $P10 yet, migrating current overlay contents"
+		cp -a /overlay/. "$TMP_OVERLAY_MNT"/ || return 1
+		cleanup_migrated_overlay || return 1
+		cleanup_extroot_markers || return 1
+	fi
+
+	sync
+	cleanup_temp_mount
+	return 0
+}
+
+case "$BOARD" in
+	zyxel,nbg7815)
+		;;
+	*)
+		exit 0
+		;;
+esac
+
+[ -b "$DISK" ] || exit 0
+
+P10_START="$(partition_field "$P10" start)"
+P10_END="$(partition_field "$P10" end)"
+
+if [ "$P10_START" != "$EXPECTED_P10_START" ] || [ "$P10_END" != "$EXPECTED_P10_END" ] || [ -b "$P11" ]; then
+	recreate_p10 || exit 1
+	sleep 2
+	CHANGED=1
+	NEEDS_OVERLAY_MIGRATION=1
+	REBOOT_REQUIRED=1
+fi
+
+if [ -b "$P10" ] && [ "$(fs_type "$P10")" != "ext4" ]; then
+	log "formatting $P10 as ext4"
+	mkfs.ext4 -F "$P10" >/dev/null 2>&1 || exit 1
+	CHANGED=1
+	NEEDS_OVERLAY_MIGRATION=1
+	REBOOT_REQUIRED=1
+fi
+
+if [ -b "$P1" ] && [ "$(fs_type "$P1")" != "ext4" ]; then
+	log "formatting $P1 as ext4 for /backup"
+	mkfs.ext4 -F "$P1" >/dev/null 2>&1 || exit 1
+	CHANGED=1
+fi
+
+prepare_extroot || exit 1
+
+if [ "$REBOOT_REQUIRED" -eq 1 ]; then
+	log "storage layout updated, scheduling reboot after boot/defaults finish"
+	cleanup_temp_mount
+	sync
+	touch "$REBOOT_MARKER"
+fi
+
+exit 0
