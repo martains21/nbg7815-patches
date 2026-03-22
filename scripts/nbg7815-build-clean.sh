@@ -7,6 +7,8 @@ FEEDS_UPDATE="${FEEDS_UPDATE:-1}"
 DL_PARALLEL="${DL_PARALLEL:-8}"
 FEED_RETRIES="${FEED_RETRIES:-3}"
 REQUIRED_FEEDS="${REQUIRED_FEEDS:-packages luci routing telephony nss_packages sqm_scripts_nss video}"
+NBG7815_EXPECT_BRANCH="${NBG7815_EXPECT_BRANCH:-nbg7815-v25.12.0-patched}"
+SKIP_BRANCH_CHECK="${SKIP_BRANCH_CHECK:-0}"
 
 echo "TOPDIR: $TOPDIR"
 echo "JOBS: $JOBS"
@@ -14,6 +16,18 @@ echo "FEED_RETRIES: $FEED_RETRIES"
 echo "REQUIRED_FEEDS: $REQUIRED_FEEDS"
 
 cd "$TOPDIR"
+
+if [ "$SKIP_BRANCH_CHECK" != "1" ] && git rev-parse --git-dir >/dev/null 2>&1; then
+	CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+	if [ "$CUR_BRANCH" = "nbg7815-v25.12.0-official" ]; then
+		echo "Refusing to build on branch nbg7815-v25.12.0-official (vanilla OpenWrt only, no NBG7815 patches)." >&2
+		echo "Checkout nbg7815-v25.12.0-patched or set SKIP_BRANCH_CHECK=1 to override." >&2
+		exit 1
+	fi
+	if [ -n "$NBG7815_EXPECT_BRANCH" ] && [ "$CUR_BRANCH" != "$NBG7815_EXPECT_BRANCH" ] && [ "$CUR_BRANCH" != "unknown" ]; then
+		echo "Warning: building on branch '$CUR_BRANCH' (expected '$NBG7815_EXPECT_BRANCH'). Set NBG7815_EXPECT_BRANCH= to silence." >&2
+	fi
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Do not run this script with sudo/root. Run as regular user." >&2
