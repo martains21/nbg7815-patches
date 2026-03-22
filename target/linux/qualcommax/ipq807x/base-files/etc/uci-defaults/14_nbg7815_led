@@ -1,0 +1,8 @@
+#!/bin/sh
+
+[ "$(board_name)" = "zyxel,nbg7815" ] || exit 0
+
+/etc/init.d/nbg7815-led enable
+/etc/init.d/nbg7815-led restart >/dev/null 2>&1
+
+exit 0

@@ -1,0 +1,370 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/system.sh
+
+STATE_DIR=/tmp/nbg7815-led
+LAST_STATE_FILE="$STATE_DIR/.last_state"
+
+night_enabled=0
+night_start=
+night_end=
+wan_interface=
+overtemp_threshold=
+
+usage() {
+	cat >&2 <<'EOF'
+Usage:
+  nbg7815-led-state apply
+  nbg7815-led-state status
+  nbg7815-led-state set <state>
+  nbg7815-led-state clear <state>
+  nbg7815-led-state help
+
+States are defined in /etc/config/nbg7815_led.
+Dynamic states:
+  internet_down
+  overtemp
+EOF
+	exit "${1:-1}"
+}
+
+ensure_state_dir() {
+	mkdir -p "$STATE_DIR"
+}
+
+time_to_minutes() {
+	local hh mm
+
+	hh="${1%:*}"
+	mm="${1#*:}"
+
+	case "$hh:$mm" in
+		[0-2][0-9]:[0-5][0-9]) ;;
+		*) return 1 ;;
+	esac
+
+	hh=$(( (${hh#0} + 0) ))
+	mm=$(( (${mm#0} + 0) ))
+
+	echo $((hh * 60 + mm))
+}
+
+is_night_mode() {
+	local now start end
+
+	[ "$night_enabled" -gt 0 ] || return 1
+
+	now=$(time_to_minutes "$(date +%H:%M)") || return 1
+	start=$(time_to_minutes "$night_start") || return 1
+	end=$(time_to_minutes "$night_end") || return 1
+
+	if [ "$start" -lt "$end" ]; then
+		[ "$now" -ge "$start" ] && [ "$now" -lt "$end" ]
+	else
+		[ "$now" -ge "$start" ] || [ "$now" -lt "$end" ]
+	fi
+}
+
+load_globals() {
+	config_load nbg7815_led
+	config_get_bool night_enabled main night_mode 0
+	config_get night_start main night_start "23:00"
+	config_get night_end main night_end "07:00"
+	config_get wan_interface main wan_interface "wan"
+	config_get overtemp_threshold main overtemp_threshold "85000"
+}
+
+wan_status_json() {
+	ifstatus "$wan_interface" 2>/dev/null
+}
+
+wan_is_up() {
+	local json up
+
+	json="$(wan_status_json)" || return 1
+	up="$(jsonfilter -s "$json" -e '@.up' 2>/dev/null)"
+	[ "$up" = "true" ]
+}
+
+wan_device_name() {
+	local json dev
+
+	json="$(wan_status_json)" || return 1
+	dev="$(jsonfilter -s "$json" -e '@.l3_device' 2>/dev/null)"
+	[ -n "$dev" ] || dev="$(jsonfilter -s "$json" -e '@.device' 2>/dev/null)"
+	[ -n "$dev" ] || return 1
+	echo "$dev"
+}
+
+wan_link_is_up() {
+	local dev carrier
+
+	dev="$(wan_device_name)" || return 1
+	[ -r "/sys/class/net/$dev/carrier" ] || return 1
+	carrier="$(cat "/sys/class/net/$dev/carrier" 2>/dev/null)"
+	[ "$carrier" = "1" ]
+}
+
+is_overtemp_active() {
+	local temp
+
+	for temp in /sys/class/thermal/thermal_zone*/temp; do
+		[ -r "$temp" ] || continue
+		[ "$(cat "$temp" 2>/dev/null)" -ge "$overtemp_threshold" ] && return 0
+	done
+
+	return 1
+}
+
+apply_led() {
+	local bank="$1" channel="$2" pattern="$3"
+
+	/sbin/led-ctl "$bank" "$channel" "$pattern" >/dev/null 2>&1
+}
+
+stop_led() {
+	local bank="$1" channel="$2"
+	local led="$bank:channel$channel"
+
+	[ -d "/sys/class/leds/$led/device" ] || return 0
+	echo 0 > "/sys/class/leds/$led/device/run_engine"
+}
+
+stop_all_leds() {
+	local bank channel
+
+	for bank in q1 q2; do
+		for channel in 0 1 2; do
+			stop_led "$bank" "$channel"
+		done
+	done
+}
+
+best_section=
+best_priority=-1
+night_mode_active=0
+
+state_status_lines=
+
+evaluate_state() {
+	local section="$1"
+	local enabled priority bank channel pattern night_policy active
+
+	config_get_bool enabled "$section" enabled 1
+	[ "$enabled" -gt 0 ] || return 0
+
+	config_get priority "$section" priority 0
+	config_get bank "$section" bank
+	config_get channel "$section" channel
+	config_get pattern "$section" pattern
+	config_get night_policy "$section" night_policy show
+
+	[ -n "$bank" ] || return 0
+	[ -n "$channel" ] || return 0
+	[ -n "$pattern" ] || return 0
+
+	case "$section" in
+		normal)
+			active=1
+			;;
+		internet_down)
+			wan_is_up && return 0
+			active=1
+			;;
+		overtemp)
+			is_overtemp_active || return 0
+			active=1
+			;;
+		*)
+			[ -f "$STATE_DIR/$section" ] || return 0
+			active=1
+			;;
+	esac
+
+	[ "$active" -gt 0 ] || return 0
+
+	if [ "$night_mode_active" -gt 0 ] && [ "$night_policy" = "hide" ]; then
+		return 0
+	fi
+
+	if [ "$priority" -gt "$best_priority" ]; then
+		best_section="$section"
+		best_priority="$priority"
+	fi
+}
+
+describe_state() {
+	local section="$1"
+	local enabled priority bank channel pattern night_policy
+	local active=0 reason="inactive"
+
+	config_get_bool enabled "$section" enabled 1
+	config_get priority "$section" priority 0
+	config_get bank "$section" bank
+	config_get channel "$section" channel
+	config_get pattern "$section" pattern
+	config_get night_policy "$section" night_policy show
+
+	if [ "$enabled" -le 0 ]; then
+		reason="disabled"
+	else
+		case "$section" in
+			normal)
+				active=1
+				reason="fallback"
+				;;
+			internet_down)
+				if wan_is_up; then
+					reason="wan up"
+				else
+					active=1
+					reason="wan is not up"
+				fi
+				;;
+			overtemp)
+				if is_overtemp_active; then
+					active=1
+					reason="temperature above threshold"
+				else
+					reason="temperature normal"
+				fi
+				;;
+			*)
+				if [ -f "$STATE_DIR/$section" ]; then
+					active=1
+					reason="marker present"
+				else
+					reason="marker absent"
+				fi
+				;;
+		esac
+	fi
+
+	if [ "$night_mode_active" -gt 0 ] && [ "$night_policy" = "hide" ] && [ "$active" -gt 0 ]; then
+		active=0
+		reason="$reason, hidden by night mode"
+	fi
+
+	state_status_lines="${state_status_lines}${section}: active=${active} priority=${priority} bank=${bank} channel=${channel} pattern=${pattern} reason=${reason}\n"
+}
+
+show_status() {
+	local last_state=none wan_dev=unknown
+	local wan_link_up=0 wan_up=0 overtemp_active=0
+
+	load_globals
+	ensure_state_dir
+
+	if is_night_mode; then
+		night_mode_active=1
+	else
+		night_mode_active=0
+	fi
+
+	best_section=
+	best_priority=-1
+	state_status_lines=
+
+	config_foreach evaluate_state state
+	config_foreach describe_state state
+
+	[ -f "$LAST_STATE_FILE" ] && last_state="$(cat "$LAST_STATE_FILE" 2>/dev/null)"
+	wan_dev="$(wan_device_name 2>/dev/null || true)"
+	[ -n "$wan_dev" ] || wan_dev="unknown"
+	wan_link_is_up && wan_link_up=1
+	wan_is_up && wan_up=1
+	is_overtemp_active && overtemp_active=1
+
+	printf '%s\n' "night_mode_active=${night_mode_active}"
+	printf '%s\n' "wan_interface=${wan_interface}"
+	printf '%s\n' "wan_device=${wan_dev}"
+	printf '%s\n' "wan_link_up=${wan_link_up}"
+	printf '%s\n' "wan_up=${wan_up}"
+	printf '%s\n' "overtemp_active=${overtemp_active}"
+	printf '%s\n' "last_applied=${last_state}"
+	printf '%s\n' "selected=${best_section:-none}"
+	printf '%s\n' "selected_priority=${best_priority}"
+	printf '%b' "$state_status_lines"
+}
+
+apply_state() {
+	local section="$1"
+	local bank channel pattern
+	local last_state=
+
+	config_get bank "$section" bank
+	config_get channel "$section" channel
+	config_get pattern "$section" pattern
+
+	[ -f "$LAST_STATE_FILE" ] && last_state="$(cat "$LAST_STATE_FILE" 2>/dev/null)"
+	[ "$last_state" = "$section" ] && return 0
+
+	stop_all_leds
+	echo "$section" > "$LAST_STATE_FILE"
+	[ "$pattern" = "off" ] && return 0
+	apply_led "$bank" "$channel" "$pattern"
+}
+
+recompute_state() {
+	load_globals
+	ensure_state_dir
+
+	if is_night_mode; then
+		night_mode_active=1
+	else
+		night_mode_active=0
+	fi
+
+	best_section=
+	best_priority=-1
+
+	config_foreach evaluate_state state
+
+	if [ -n "$best_section" ]; then
+		apply_state "$best_section"
+	else
+		rm -f "$LAST_STATE_FILE"
+		stop_all_leds
+	fi
+}
+
+set_state() {
+	local state="$1"
+
+	[ -n "$state" ] || usage 1
+	ensure_state_dir
+	: > "$STATE_DIR/$state"
+	recompute_state
+}
+
+clear_state() {
+	local state="$1"
+
+	[ -n "$state" ] || usage 1
+	rm -f "$STATE_DIR/$state"
+	recompute_state
+}
+
+[ "$(board_name)" = "zyxel,nbg7815" ] || exit 0
+
+case "$1" in
+	set)
+		set_state "$2"
+		;;
+	clear)
+		clear_state "$2"
+		;;
+	apply)
+		recompute_state
+		;;
+	status)
+		show_status
+		;;
+	help|-h|--help)
+		usage 0
+		;;
+	*)
+		usage 1
+		;;
+esac

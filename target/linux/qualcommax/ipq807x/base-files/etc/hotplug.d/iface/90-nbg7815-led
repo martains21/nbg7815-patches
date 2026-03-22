@@ -1,0 +1,5 @@
+#!/bin/sh
+
+[ "$INTERFACE" = "wan" ] || exit 0
+
+/sbin/nbg7815-led-state apply

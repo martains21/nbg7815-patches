@@ -1,0 +1,12 @@
+#!/bin/sh
+
+[ "$ACTION" = "add" ] || exit 0
+
+seconds="$(uci -q get nbg7815_led.main.usb_notify_seconds)"
+[ -n "$seconds" ] || seconds=2
+
+/sbin/nbg7815-led-state set usb_notify
+(
+	sleep "$seconds"
+	/sbin/nbg7815-led-state clear usb_notify
+) &

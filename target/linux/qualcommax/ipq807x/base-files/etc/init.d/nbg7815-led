@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+
+USE_PROCD=1
+
+start_service() {
+	local boot_timeout refresh_interval
+
+	boot_timeout="$(uci -q get nbg7815_led.main.boot_timeout)"
+	[ -n "$boot_timeout" ] || boot_timeout=30
+	refresh_interval="$(uci -q get nbg7815_led.main.refresh_interval)"
+	[ -n "$refresh_interval" ] || refresh_interval=10
+
+	/sbin/nbg7815-led-state set boot
+	(
+		sleep "$boot_timeout"
+		/sbin/nbg7815-led-state clear boot
+	) &
+
+	procd_open_instance monitor
+	procd_set_param command /bin/sh -c "while sleep $refresh_interval; do /sbin/nbg7815-led-state apply; done"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+reload_service() {
+	/sbin/nbg7815-led-state apply
+}

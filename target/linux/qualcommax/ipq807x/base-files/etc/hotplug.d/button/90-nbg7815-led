@@ -1,0 +1,24 @@
+#!/bin/sh
+
+case "$BUTTON" in
+	reset)
+		case "$ACTION" in
+			pressed)
+				/sbin/nbg7815-led-state set reset_pending
+				;;
+			released)
+				/sbin/nbg7815-led-state clear reset_pending
+				;;
+		esac
+		;;
+	wps)
+		case "$ACTION" in
+			pressed)
+				/sbin/nbg7815-led-state set wps
+				;;
+			released)
+				/sbin/nbg7815-led-state clear wps
+				;;
+		esac
+		;;
+esac
