@@ -16,7 +16,7 @@ MP_CONFIG_BOOL="mesh_auto_open_plinks mesh_fwding"
 MP_CONFIG_STRING="mesh_power_mode"
 
 wdev_tool() {
-	ucode /usr/share/hostap/wdev.uc "$@"
+	ucode /usr/share/hostap/wdev.uc "$@" 2>/dev/null
 }
 
 ubus_call() {
@@ -1191,8 +1191,9 @@ drv_mac80211_setup() {
 	[ "$rxantenna" = "$prev_rxantenna" -a "$txantenna" = "$prev_txantenna" ] || mac80211_reset_config "$phy"
 	wireless_set_data phy="$phy" radio="$radio" txantenna="$txantenna" rxantenna="$rxantenna"
 
-	iw phy "$phy" set antenna $txantenna $rxantenna >/dev/null 2>&1
-	iw phy "$phy" set distance "$distance" >/dev/null 2>&1
+	[ "$txantenna" = "0xffffffff" -a "$rxantenna" = "0xffffffff" ] || \
+		iw phy "$phy" set antenna $txantenna $rxantenna >/dev/null 2>&1
+	[ "$distance" = "0" ] || iw phy "$phy" set distance "$distance" >/dev/null 2>&1
 
 	[ -n "$frag" ] && iw phy "$phy" set frag "${frag%%.*}"
 	[ -n "$rts" ] && iw phy "$phy" set rts "${rts%%.*}"

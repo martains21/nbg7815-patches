@@ -129,7 +129,7 @@ _wdev_notify() {
 	local options="$1"
 
 	json_close_object
-	ubus $options call network.wireless notify "$(json_dump)"
+	ubus $options call network.wireless notify "$(json_dump)" 2>/dev/null
 }
 
 _wdev_add_variables() {

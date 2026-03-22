@@ -77,6 +77,7 @@ function setup_phy(phy, config, data) {
 
 	set_default(config, 'rxantenna', 0xffffffff);
 	set_default(config, 'txantenna', 0xffffffff);
+	set_default(config, 'distance', 0);
 
 	if (config.txantenna == 'all')
 		config.txantenna = 0xffffffff;
@@ -99,8 +100,10 @@ function setup_phy(phy, config, data) {
 		config.txpower = 'auto';
 
 	log(`Configuring '${phy}' txantenna: ${config.txantenna}, rxantenna: ${config.rxantenna} distance: ${config.distance}`);
-	system(`iw phy ${phy} set antenna ${config.txantenna} ${config.rxantenna}`);
-	system(`iw phy ${phy} set distance ${config.distance}`);
+	if (config.txantenna != 0xffffffff || config.rxantenna != 0xffffffff)
+		system(`iw phy ${phy} set antenna ${config.txantenna} ${config.rxantenna}`);
+	if (+config.distance > 0)
+		system(`iw phy ${phy} set distance ${config.distance}`);
 	system(`iw phy ${phy} set txpower ${config.txpower}`);
 
 	if (config.frag)
