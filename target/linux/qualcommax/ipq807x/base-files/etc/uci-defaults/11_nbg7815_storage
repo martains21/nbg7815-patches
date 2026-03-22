@@ -140,11 +140,12 @@ cleanup_extroot_markers() {
 	upper_etc="$TMP_OVERLAY_MNT/upper/etc"
 
 	mkdir -p "$root_etc" || return 1
-	rm -f "$root_etc/.extroot-uuid"
-	touch "$root_etc/.extroot-default" || return 1
+	# Overlay uses fstab (p10 -> /overlay). Never create .extroot-default on p10 — it switches
+	# mount_root to extroot and breaks block/fstab + procd (see preinit 79_nbg7815_extroot).
+	rm -f "$root_etc/.extroot-uuid" "$root_etc/.extroot-default"
 
 	if [ -d "$upper_etc" ]; then
-		rm -f "$upper_etc/.extroot-uuid"
+		rm -f "$upper_etc/.extroot-uuid" "$upper_etc/.extroot-default"
 	fi
 
 	return 0

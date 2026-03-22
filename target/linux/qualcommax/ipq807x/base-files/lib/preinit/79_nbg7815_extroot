@@ -1,8 +1,11 @@
 #!/bin/sh
+# Clear stale extroot markers on mmcblk0p10. Overlay is mounted via /etc/config/fstab
+# (target /overlay, device /dev/mmcblk0p10). Do NOT create .extroot-default — that forces
+# mount_root into extroot mode and breaks overlay + fstab (block: fstab Entry not found, ubus chown).
 
 . /lib/functions/system.sh
 
-nbg7815_fix_extroot_uuid() {
+nbg7815_clear_extroot_markers_on_p10() {
 	local board disk p10 mnt
 
 	board="$(board_name)"
@@ -20,12 +23,11 @@ nbg7815_fix_extroot_uuid() {
 		return 0
 	}
 
-	rm -f "$mnt/etc/.extroot-uuid" "$mnt/upper/etc/.extroot-uuid"
-	mkdir -p "$mnt/etc"
-	touch "$mnt/etc/.extroot-default"
+	rm -f "$mnt/etc/.extroot-uuid" "$mnt/etc/.extroot-default"
+	rm -f "$mnt/upper/etc/.extroot-uuid" "$mnt/upper/etc/.extroot-default"
 	sync
 	umount "$mnt" 2>/dev/null
 	rmdir "$mnt" 2>/dev/null
 }
 
-boot_hook_add preinit_main nbg7815_fix_extroot_uuid
+boot_hook_add preinit_main nbg7815_clear_extroot_markers_on_p10
