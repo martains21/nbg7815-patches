@@ -76,11 +76,17 @@ rm -rf "$TOPDIR/bin/packages/aarch64_cortex-a53" || true
 find "$TOPDIR/staging_dir" -maxdepth 1 -type d -name 'target-*' -exec rm -rf {} + || true
 find "$TOPDIR/build_dir" -maxdepth 1 -type d -name 'target-*' -exec rm -rf {} + || true
 
-echo "[4/6] Syncing existing .config with defaults (defconfig)"
+echo "[4/6] Actualizing .config (defconfig + conf --olddefconfig)"
+# defconfig: align with in-tree defaults for the selected target (builds scripts/config/conf)
 make defconfig
+# Merge new Kconfig symbols after feed updates (OpenWrt has no top-level 'make olddefconfig')
+./scripts/config/conf --olddefconfig Config.in
 
 echo "[5/6] Downloading sources"
-make download -j"$DL_PARALLEL"
+make download -j"$DL_PARALLEL" || {
+	echo "Parallel download had failures; retrying with -j1..." >&2
+	make download -j1
+}
 
 echo "[6/6] Building firmware and packages"
 if ! make -j"$JOBS" V=s; then
@@ -105,4 +111,7 @@ echo "Build finished successfully"
 echo "Artifacts:"
 echo "  $SYSUPGRADE_BIN"
 echo "  $FACTORY_BIN"
+echo ""
+echo "SHA256:"
+sha256sum "$SYSUPGRADE_BIN" "$FACTORY_BIN"
 exit 0
