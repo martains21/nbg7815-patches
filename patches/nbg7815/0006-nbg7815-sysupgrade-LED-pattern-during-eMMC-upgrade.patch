@@ -1,0 +1,24 @@
+From 26ce485a1d257611b3fdcfdd4d053b9fff6eddef Mon Sep 17 00:00:00 2001
+From: Martain Stealy <sverzhuk2@yandex.ru>
+Date: Sun, 22 Mar 2026 17:56:18 +0700
+Subject: [PATCH 06/11] nbg7815: sysupgrade LED pattern during eMMC upgrade
+
+Made-with: Cursor
+---
+ .../qualcommax/ipq807x/base-files/lib/upgrade/platform.sh      | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+index 1ddc73f09e..9aa20e7b9d 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+@@ -298,6 +298,9 @@ platform_do_upgrade() {
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	zyxel,nbg7815)
++		echo 0 > /sys/class/leds/q1:channel0/device/run_engine
++		echo "00499C0040FF7E0040007E00A001" > /sys/class/leds/q1:channel0/device/engine1_load
++		echo 1 > /sys/class/leds/q1:channel0/device/run_engine
+ 		local config_mtdnum="$(find_mtd_index 0:bootconfig)"
+ 		[ -z "$config_mtdnum" ] && reboot
+ 		part_num="$(hexdump -e '1/1 "%01x|"' -n 1 -s 168 -C /dev/mtd$config_mtdnum | cut -f 1 -d "|" | head -n1)"

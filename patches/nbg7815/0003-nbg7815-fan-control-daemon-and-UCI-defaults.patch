@@ -1,0 +1,245 @@
+From 6568b75c790ea1036ed8d5c1c5109b19293667a0 Mon Sep 17 00:00:00 2001
+From: Martain Stealy <sverzhuk2@yandex.ru>
+Date: Sun, 22 Mar 2026 17:55:48 +0700
+Subject: [PATCH 03/11] nbg7815: fan control daemon and UCI defaults
+
+Made-with: Cursor
+---
+ .../qualcommax/ipq807x/base-files/bin/fanctl  |  59 ++++++++++
+ .../ipq807x/base-files/etc/config/fanctld     |   8 ++
+ .../ipq807x/base-files/etc/init.d/fanctld     |  26 ++++
+ .../ipq807x/base-files/sbin/fanctld           | 111 ++++++++++++++++++
+ 4 files changed, 204 insertions(+)
+ create mode 100755 target/linux/qualcommax/ipq807x/base-files/bin/fanctl
+ create mode 100644 target/linux/qualcommax/ipq807x/base-files/etc/config/fanctld
+ create mode 100755 target/linux/qualcommax/ipq807x/base-files/etc/init.d/fanctld
+ create mode 100755 target/linux/qualcommax/ipq807x/base-files/sbin/fanctld
+
+diff --git a/target/linux/qualcommax/ipq807x/base-files/bin/fanctl b/target/linux/qualcommax/ipq807x/base-files/bin/fanctl
+new file mode 100755
+index 0000000000..5bc76eb7a7
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/bin/fanctl
+@@ -0,0 +1,59 @@
++#!/bin/sh
++# base on work of: Karol Przybylski <itor@o2.pl>
++
++. /lib/functions.sh
++
++get_gpio() {
++
++	local config_section="config"
++
++	config_load 'fanctld'
++	config_get FAN_GPIO "$config_section" Gpio
++		[ -z "$FAN_GPIO" ] || {
++			return 1
++		}
++		[ -f "/sys/class/gpio/$FAN_GPIO/value" ] || {
++			return 1
++		}
++}
++
++get_gpio
++GPIO="$FAN_GPIO"
++
++usage() {
++  echo "usage: $0 [start|stop|status]"
++}
++
++fan_start() {
++  echo 1 > /sys/class/gpio/$GPIO/value
++}
++
++fan_stop() {
++   echo 0 > /sys/class/gpio/$GPIO/value
++}
++
++fan_status() {
++  status=`cat /sys/class/gpio/$GPIO/value`
++  if [ $status = 0 ]; then
++	  echo "disable"
++  else
++	  echo "enable"
++  fi
++}
++
++case $1 in
++  start)
++    fan_start
++    ;;
++  stop)
++    fan_stop
++    ;;
++  status)
++    fan_status
++    ;;
++  *)
++    usage
++    ;;
++esac
++
++exit 0
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/config/fanctld b/target/linux/qualcommax/ipq807x/base-files/etc/config/fanctld
+new file mode 100644
+index 0000000000..3562a8860f
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/config/fanctld
+@@ -0,0 +1,8 @@
++config fanctld 'config'
++	option Enabled '1'
++	option Gpio 'fan'
++	option Debug '0'
++	option Delay '5'
++	option Hits '3'
++	option Temp '75000'
++	option Hyst '5000'
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/init.d/fanctld b/target/linux/qualcommax/ipq807x/base-files/etc/init.d/fanctld
+new file mode 100755
+index 0000000000..5d204edb7d
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/init.d/fanctld
+@@ -0,0 +1,26 @@
++#!/bin/sh /etc/rc.common
++
++START=95
++
++USE_PROCD=1
++
++PROG=/sbin/fanctld
++
++start_service() {
++	local config_section="config"
++	config_load 'fanctld'
++	config_get_bool enabled "$config_section" Enabled
++	[ "$enabled" -gt 0 ] || {
++		return 1
++	}
++
++	procd_open_instance
++	procd_set_param command "$PROG"
++	procd_set_param respawn
++	procd_close_instance
++}
++
++stop_service() {
++	/bin/fanctl stop
++	echo "Fanctld Service stopped. Fan is disabled!"
++}
+diff --git a/target/linux/qualcommax/ipq807x/base-files/sbin/fanctld b/target/linux/qualcommax/ipq807x/base-files/sbin/fanctld
+new file mode 100755
+index 0000000000..1809620264
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/sbin/fanctld
+@@ -0,0 +1,111 @@
++#!/bin/sh
++
++. /lib/functions.sh
++
++dlog() {
++	[ $debug = '1' ] && echo "$@" >> /tmp/fanctld.log
++}
++
++load_config() {
++
++	local config_section="config"
++
++	config_load 'fanctld'
++
++	config_get enabled "$config_section" Enabled
++	config_get fan_gpio "$config_section" Gpio
++	config_get debug "$config_section" Debug
++	config_get delay "$config_section" Delay
++	config_get hit_level "$config_section" Hits
++	config_get temp_trip "$config_section" Temp
++	config_get temp_hyst "$config_section" Hyst
++}
++
++load_config
++
++temp_clr=$((($temp_trip)-($temp_hyst)))
++
++nss_temp() {
++	cat /sys/class/thermal/thermal_zone0/temp
++}
++
++cpu_temp() {
++	cat /sys/class/thermal/thermal_zone9/temp
++}
++
++wifi0_temp() {
++       cat /sys/devices/platform/soc@0/c000000.wifi/ieee80211/phy0/hwmon*/temp1_input
++}
++
++wifi1_temp() {
++	 cat /sys/devices/platform/soc@0/c000000.wifi/ieee80211/phy1/hwmon*/temp1_input
++}
++
++aqr_temp() {
++	cat /sys/devices/platform/soc@0/90000.mdio/mdio_bus/90000.mdio-1/90000.mdio-1:08/hwmon/hwmon*/temp1_input
++}
++
++check_temps() {
++
++	temp1=$(nss_temp)
++	temp2=$(cpu_temp)
++	temp3=$(($(wifi0_temp)-2000))
++	temp4=$(($(wifi1_temp)))
++	temp5=$(($(aqr_temp)-2000))
++
++	dlog "nss_temp=$temp1 cpu_temp=$temp2 wifi0_temp=$temp3 wifi1_temp=$temp4 aqr_temp=$temp5"
++
++	load_config
++
++	if [ $temp1 -ge $temp_trip -o $temp2 -ge $temp_trip -o $temp3 -ge $temp_trip -o $temp4 -ge $temp_trip -o $temp5 -ge $temp_trip ]; then
++		echo 2
++	elif [ $temp1 -le $temp_clr -a $temp2 -le $temp_clr -a $temp3 -le $temp_clr -a $temp4 -le $temp_clr -a $temp5 -le $temp_clr ]; then
++		echo 1
++	else
++		echo 0
++	fi
++}
++
++fan_status() {
++	fanctl status
++}
++
++load_config
++
++dlog "----- fanctld debug log -----"
++dlog "enabled=$enabled, delay=$delay, hit_level=$hit_level, temp=$temp_trip, hyst=$temp_hyst, debug=$debug"
++
++>> /tmp/fanctld.log
++
++trip_hits=0
++clr_hits=0
++
++while true; do
++	sleep $delay
++
++	result=$(check_temps)
++
++	if [ $result = '2' ]; then
++		trip_hits=$((trip_hits+1))
++	elif [ $result = '1' ]; then
++		clr_hits=$((clr_hits+1))
++	else
++		trip_hits=0
++		clr_hits=0
++	fi
++
++	if [ $trip_hits -ge $hit_level ]; then
++		trip_hits=0
++		if [ $(fan_status) = 'disable' ]; then
++			fanctl start
++			logger -p info -t fanctld "Fan switch on temperature reached ("$temp_trip"), start fan"
++
++		fi
++	elif [ $clr_hits -ge $hit_level ]; then
++		clr_hits=0
++		if [ $(fan_status) = 'enable' ]; then
++			fanctl stop
++			logger -p info -t fanctld "Fan switch off temperature reached ("$temp_clr"), stop fan"
++		fi
++	fi
++done

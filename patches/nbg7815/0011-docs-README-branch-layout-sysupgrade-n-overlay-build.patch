@@ -1,0 +1,122 @@
+From c29b2dcba021a862b275fa58f1b904e77e0a9ad9 Mon Sep 17 00:00:00 2001
+From: Martain Stealy <sverzhuk2@yandex.ru>
+Date: Sun, 22 Mar 2026 18:02:07 +0700
+Subject: [PATCH 11/11] docs: README branch layout, sysupgrade -n overlay,
+ build script branch guard
+
+Made-with: Cursor
+---
+ README.md                      | 42 +++++++++++++++++++++++++++++-----
+ scripts/nbg7815-build-clean.sh | 14 ++++++++++++
+ 2 files changed, 50 insertions(+), 6 deletions(-)
+
+diff --git a/README.md b/README.md
+index 63040c8d05..2a1727b379 100644
+--- a/README.md
++++ b/README.md
+@@ -2,11 +2,22 @@
+ 
+ This repository is a personal OpenWrt tree for the Zyxel `NBG7815`.
+ 
++## Git branches
++
++| Branch | Purpose |
++| --- | --- |
++| `nbg7815-v25.12.0-official` | Clean [OpenWrt v25.12.0](https://github.com/openwrt/openwrt/releases/tag/v25.12.0) only (no NBG7815 customization in this repo). |
++| `nbg7815-v25.12.0-patched` | **Build this.** Official tag plus NSS, storage, LED, fan, Wi‑Fi, and board fixes for `zyxel_nbg7815`. |
++| `nbg7815-patches` | Same content as `patched`, plus `patches/nbg7815/*.patch` (`git format-patch`) for reference; port to a new upstream tag yourself with `git cherry-pick`, `git rebase`, or `git am` on those files. |
++
++Previous state before the split is kept as branch `backup/pre-split-2026-03-22`.
++
++Upstream remote (add once): `git remote add upstream https://github.com/openwrt/openwrt.git`
++
+ It exists to keep one reproducible source tree with:
+-- official OpenWrt `openwrt-25.12` as the base
+-- NSS acceleration for `ipq807x`
+-- `NBG7815` device-specific fixes and defaults
+-- a known-good build and upgrade path from official OpenWrt
++- official OpenWrt `v25.12.0` as the base on the `official` branch
++- NSS acceleration for `ipq807x` and NBG7815-specific behavior on `patched`
++- a known-good build and upgrade path
+ 
+ This is not a generic OpenWrt fork for all targets. It is a focused `qualcommax/ipq807x -> zyxel_nbg7815` tree with the extra patches needed for this hardware.
+ 
+@@ -35,8 +46,9 @@ This tree contains four main groups of changes.
+   - `/overlay -> /dev/mmcblk0p10`
+   - `/backup -> /dev/mmcblk0p1`
+ - extroot cleanup in preinit
+-- first-boot storage migration logic
++- first-boot storage migration logic (legacy `p10`+`p11` merged into one overlay partition when needed)
+ - cleanup for stale overlay kernel module metadata
++- **`sysupgrade -n`** reformats `mmcblk0p10` during upgrade (see `lib/upgrade/platform.sh`) so ROM defaults in SquashFS are not hidden by an old `/overlay/upper`; use a normal `sysupgrade` (keep settings) if you want to preserve the overlay
+ 
+ ### 4. Runtime fixes and polish
+ 
+@@ -106,16 +118,34 @@ If your distro uses different package names, install the equivalent toolchain, b
+ 
+ ## Build
+ 
+-From a clean checkout:
++Use branch `nbg7815-v25.12.0-patched`, then either the helper script or a manual build:
+ 
+ ```bash
+ cd /path/to/nbg7815-patches
++git checkout nbg7815-v25.12.0-patched
++./scripts/nbg7815-build-clean.sh
++```
++
++The script refuses to run on `nbg7815-v25.12.0-official` unless you set `SKIP_BRANCH_CHECK=1`. Override expected branch with `NBG7815_EXPECT_BRANCH=`.
++
++Manual equivalent:
++
++```bash
++cd /path/to/nbg7815-patches
++git checkout nbg7815-v25.12.0-patched
+ ./scripts/feeds update -a
+ ./scripts/feeds install -a
+ make defconfig
+ make -j"$(nproc)" V=s
+ ```
+ 
++### Porting patches to a newer OpenWrt tag
++
++There is no helper script: integrate changes manually with Git. Typical options:
++
++- Add this repo as a remote and `git cherry-pick` the range `nbg7815-v25.12.0-official..nbg7815-v25.12.0-patched` onto your upstream checkout (resolve conflicts per file).
++- Or use the mailboxes under `patches/nbg7815/` on branch `nbg7815-patches` with `git am` yourself, if you prefer a patch series.
++
+ ## Flash
+ 
+ This tree is intended to be flashed from an existing official OpenWrt installation on `NBG7815`.
+diff --git a/scripts/nbg7815-build-clean.sh b/scripts/nbg7815-build-clean.sh
+index f993c13994..3fbb4c78b6 100755
+--- a/scripts/nbg7815-build-clean.sh
++++ b/scripts/nbg7815-build-clean.sh
+@@ -7,6 +7,8 @@ FEEDS_UPDATE="${FEEDS_UPDATE:-1}"
+ DL_PARALLEL="${DL_PARALLEL:-8}"
+ FEED_RETRIES="${FEED_RETRIES:-3}"
+ REQUIRED_FEEDS="${REQUIRED_FEEDS:-packages luci routing telephony nss_packages sqm_scripts_nss video}"
++NBG7815_EXPECT_BRANCH="${NBG7815_EXPECT_BRANCH:-nbg7815-v25.12.0-patched}"
++SKIP_BRANCH_CHECK="${SKIP_BRANCH_CHECK:-0}"
+ 
+ echo "TOPDIR: $TOPDIR"
+ echo "JOBS: $JOBS"
+@@ -15,6 +17,18 @@ echo "REQUIRED_FEEDS: $REQUIRED_FEEDS"
+ 
+ cd "$TOPDIR"
+ 
++if [ "$SKIP_BRANCH_CHECK" != "1" ] && git rev-parse --git-dir >/dev/null 2>&1; then
++	CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
++	if [ "$CUR_BRANCH" = "nbg7815-v25.12.0-official" ]; then
++		echo "Refusing to build on branch nbg7815-v25.12.0-official (vanilla OpenWrt only, no NBG7815 patches)." >&2
++		echo "Checkout nbg7815-v25.12.0-patched or set SKIP_BRANCH_CHECK=1 to override." >&2
++		exit 1
++	fi
++	if [ -n "$NBG7815_EXPECT_BRANCH" ] && [ "$CUR_BRANCH" != "$NBG7815_EXPECT_BRANCH" ] && [ "$CUR_BRANCH" != "unknown" ]; then
++		echo "Warning: building on branch '$CUR_BRANCH' (expected '$NBG7815_EXPECT_BRANCH'). Set NBG7815_EXPECT_BRANCH= to silence." >&2
++	fi
++fi
++
+ if [ "$(id -u)" -eq 0 ]; then
+   echo "Do not run this script with sudo/root. Run as regular user." >&2
+   exit 1

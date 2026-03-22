@@ -1,0 +1,142 @@
+From dc828ea3975f96a1416e99b2556524638b2f5820 Mon Sep 17 00:00:00 2001
+From: Martain Stealy <sverzhuk2@yandex.ru>
+Date: Sun, 22 Mar 2026 17:56:06 +0700
+Subject: [PATCH 04/11] =?UTF-8?q?nbg7815:=20Wi=E2=80=91Fi=20caldata/MAC=20?=
+ =?UTF-8?q?migration,=20board=20UCI=20defaults,=20smp=5Faffinity?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Made-with: Cursor
+---
+ .../base-files/etc/config/smp_affinity        |  3 ++
+ .../ipq807x/base-files/etc/config/system      | 22 ++++++++++++
+ .../ipq807x/base-files/etc/config/wireless    | 36 +++++++++++++++++++
+ .../etc/hotplug.d/firmware/11-ath11k-caldata  |  1 -
+ .../ipq807x/base-files/etc/init.d/bootcount   |  3 ++
+ .../etc/sysctl.d/99-nbg7815-network.conf      | 10 ++++++
+ 6 files changed, 74 insertions(+), 1 deletion(-)
+ create mode 100644 target/linux/qualcommax/ipq807x/base-files/etc/config/smp_affinity
+ create mode 100644 target/linux/qualcommax/ipq807x/base-files/etc/config/system
+ create mode 100644 target/linux/qualcommax/ipq807x/base-files/etc/config/wireless
+ create mode 100644 target/linux/qualcommax/ipq807x/base-files/etc/sysctl.d/99-nbg7815-network.conf
+
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/config/smp_affinity b/target/linux/qualcommax/ipq807x/base-files/etc/config/smp_affinity
+new file mode 100644
+index 0000000000..fc6ab087a3
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/config/smp_affinity
+@@ -0,0 +1,3 @@
++config smp_affinity 'general'
++	option enable '1'
++	option enable_log '1'
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/config/system b/target/linux/qualcommax/ipq807x/base-files/etc/config/system
+new file mode 100644
+index 0000000000..e6626983ff
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/config/system
+@@ -0,0 +1,22 @@
++config system
++	option hostname 'NBG7815'
++	option timezone '<+07>-7'
++	option zonename 'Asia/Novosibirsk'
++	option ttylogin '0'
++	option log_size '128'
++	option urandom_seed '0'
++	option zram_size_mb '384'
++	option zram_comp_algo 'lz4'
++	option zram_priority '100'
++	option clock_hourcycle 'h23'
++	option log_proto 'udp'
++	option conloglevel '8'
++	option cronloglevel '7'
++
++config timeserver 'ntp'
++	option enabled '1'
++	option enable_server '0'
++	list server '0.openwrt.pool.ntp.org'
++	list server '1.openwrt.pool.ntp.org'
++	list server '2.openwrt.pool.ntp.org'
++	list server '3.openwrt.pool.ntp.org'
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/config/wireless b/target/linux/qualcommax/ipq807x/base-files/etc/config/wireless
+new file mode 100644
+index 0000000000..ffd7c93462
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/config/wireless
+@@ -0,0 +1,36 @@
++config wifi-device 'radio0'
++	option type 'mac80211'
++	option path 'platform/soc@0/c000000.wifi'
++	option band '5g'
++	option channel 'auto'
++	option htmode 'HE160'
++	option country 'PA'
++	option cell_density '3'
++	option txpower '30'
++
++config wifi-iface 'default_radio0'
++	option device 'radio0'
++	option network 'lan'
++	option mode 'ap'
++	option ssid 'NBG7815 5GHz'
++	option encryption 'none'
++	option disabled '0'
++
++config wifi-device 'radio1'
++	option type 'mac80211'
++	option path 'platform/soc@0/c000000.wifi+1'
++	option band '2g'
++	option channel 'auto'
++	option htmode 'HE40'
++	option country 'PA'
++	option cell_density '3'
++	option legacy_rates '1'
++	option txpower '30'
++
++config wifi-iface 'default_radio1'
++	option device 'radio1'
++	option network 'lan'
++	option mode 'ap'
++	option ssid 'NBG7815 2.4GHz'
++	option encryption 'none'
++	option disabled '0'
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index df4907c517..373294cd35 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -123,7 +123,6 @@ case "$FIRMWARE" in
+ 		label_mac=$(get_mac_label)
+ 		ath11k_patch_mac $(macaddr_add $label_mac 3) 0
+ 		ath11k_patch_mac $(macaddr_add $label_mac 2) 1
+-		ath11k_patch_mac $(macaddr_add $label_mac 4) 2
+ 		ath11k_set_macflag
+ 		;;
+ 	zyxel,nwa210ax)
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/init.d/bootcount b/target/linux/qualcommax/ipq807x/base-files/etc/init.d/bootcount
+index e7c20493b6..7758d1aba4 100755
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/init.d/bootcount
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/init.d/bootcount
+@@ -22,4 +22,7 @@ boot() {
+ 		fw_setenv boot_count 0
+ 	;;
+ 	esac
++
++	#stability increase reserved mem to avoid oom when services are used that consume large amounts of mem e.g. samba with attached usb disk etc.
++	sysctl -w vm.min_free_kbytes=65536
+ }
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/sysctl.d/99-nbg7815-network.conf b/target/linux/qualcommax/ipq807x/base-files/etc/sysctl.d/99-nbg7815-network.conf
+new file mode 100644
+index 0000000000..71d81ddfe0
+--- /dev/null
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/sysctl.d/99-nbg7815-network.conf
+@@ -0,0 +1,10 @@
++net.core.rmem_max=4194304
++net.core.rmem_default=262144
++net.core.wmem_max=4194304
++net.core.wmem_default=262144
++net.core.netdev_max_backlog=8192
++net.ipv4.tcp_rmem=4096 87380 6291456
++net.ipv4.tcp_wmem=4096 16384 4194304
++net.ipv4.tcp_timestamps=0
++net.ipv4.tcp_max_syn_backlog=2048
++net.ipv4.tcp_slow_start_after_idle=0

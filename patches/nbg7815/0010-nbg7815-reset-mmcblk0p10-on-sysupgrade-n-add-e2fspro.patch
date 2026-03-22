@@ -1,0 +1,80 @@
+From 4a1551b2a7657ea169628572c1fe738b31a6b8fa Mon Sep 17 00:00:00 2001
+From: Martain Stealy <sverzhuk2@yandex.ru>
+Date: Sun, 22 Mar 2026 17:58:31 +0700
+Subject: [PATCH 10/11] nbg7815: reset mmcblk0p10 on sysupgrade -n; add
+ e2fsprogs; document storage layout
+
+Made-with: Cursor
+---
+ target/linux/qualcommax/image/ipq807x.mk      |  2 +-
+ .../etc/uci-defaults/11_nbg7815_storage       |  2 ++
+ .../base-files/lib/upgrade/platform.sh        | 23 ++++++++++++++++++-
+ 3 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/target/linux/qualcommax/image/ipq807x.mk b/target/linux/qualcommax/image/ipq807x.mk
+index 91e8eeb072..e3fc2b50fc 100644
+--- a/target/linux/qualcommax/image/ipq807x.mk
++++ b/target/linux/qualcommax/image/ipq807x.mk
+@@ -544,7 +544,7 @@ define Device/zyxel_nbg7815
+ 	DEVICE_MODEL := NBG7815
+ 	DEVICE_DTS_CONFIG := config@nbg7815
+ 	SOC := ipq8074
+-	DEVICE_PACKAGES := kmod-fs-f2fs f2fs-tools ipq-wifi-zyxel_nbg7815 kmod-ath11k-pci \
++	DEVICE_PACKAGES := kmod-fs-f2fs f2fs-tools kmod-fs-ext4 e2fsprogs ipq-wifi-zyxel_nbg7815 kmod-ath11k-pci \
+ 		kmod-hci-uart kmod-hwmon-tmp103 kmod-leds-lp5569
+ endef
+ TARGET_DEVICES += zyxel_nbg7815
+diff --git a/target/linux/qualcommax/ipq807x/base-files/etc/uci-defaults/11_nbg7815_storage b/target/linux/qualcommax/ipq807x/base-files/etc/uci-defaults/11_nbg7815_storage
+index eaebd7da9d..5098817755 100755
+--- a/target/linux/qualcommax/ipq807x/base-files/etc/uci-defaults/11_nbg7815_storage
++++ b/target/linux/qualcommax/ipq807x/base-files/etc/uci-defaults/11_nbg7815_storage
+@@ -1,4 +1,6 @@
+ #!/bin/sh
++# Merge legacy p10+p11 into one ext4 /overlay; use p1 as /backup (see /etc/config/fstab).
++# sysupgrade -n clears mmcblk0p10 in platform.sh so SquashFS defaults are not masked by the old overlay.
+ 
+ . /lib/functions/system.sh
+ 
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+index 9aa20e7b9d..917b168687 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+@@ -1,9 +1,29 @@
+ PART_NAME=firmware
+ REQUIRE_IMAGE_METADATA=1
+ 
+-RAMFS_COPY_BIN='fw_printenv fw_setenv head'
++RAMFS_COPY_BIN='fw_printenv fw_setenv head mkfs.ext4'
+ RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
+ 
++# eMMC overlay is on a separate partition; sysupgrade -n does not clear it unless we do it here.
++zyxel_nbg7815_reset_overlay_if_fresh_sysupgrade() {
++	[ "$(board_name)" = "zyxel,nbg7815" ] || return 0
++	[ -z "$UPGRADE_BACKUP" ] || return 0
++
++	local ov="/dev/mmcblk0p10"
++	[ -b "$ov" ] || return 0
++
++	v "nbg7815: resetting eMMC overlay partition (sysupgrade without keeping settings)"
++
++	if command -v mkfs.ext4 >/dev/null 2>&1; then
++		mkfs.ext4 -F -L overlay "$ov" >/dev/null 2>&1 || {
++			echo "nbg7815: mkfs.ext4 failed for $ov" >&2
++			return 1
++		}
++	else
++		dd if=/dev/zero of="$ov" bs=1M count=64 conv=fsync 2>/dev/null || true
++	fi
++}
++
+ xiaomi_initramfs_prepare() {
+ 	# Wipe UBI if running initramfs
+ 	[ "$(rootfs_type)" = "tmpfs" ] || return 0
+@@ -312,6 +332,7 @@ platform_do_upgrade() {
+ 			CI_ROOTPART="rootfs_1"
+ 		fi
+ 		emmc_do_upgrade "$1"
++		zyxel_nbg7815_reset_overlay_if_fresh_sysupgrade
+ 		;;
+ 	*)
+ 		default_do_upgrade "$1"
