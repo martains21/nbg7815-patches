@@ -1,0 +1,16 @@
+--- a/drivers/net/phy/aquantia/aquantia_hwmon.c
++++ b/drivers/net/phy/aquantia/aquantia_hwmon.c
+@@ -48,10 +48,10 @@ static int aqr_hwmon_get(struct phy_device *phydev, int reg, long *value)
+ static int aqr_hwmon_set(struct phy_device *phydev, int reg, long value)
+ {
+ 	int temp;
+ 
+-	if (value >= 128000 || value < -128000)
+-		return -ERANGE;
++	/* Thermal core can probe window bounds outside PHY range. Clamp them. */
++	value = clamp_val(value, -127000, 127000);
+ 
+ 	temp = value * 256 / 1000;
+ 
+ 	/* temp is in s16 range and we're interested in lower 16 bits only */
+ 	return phy_write_mmd(phydev, MDIO_MMD_VEND1, reg, (u16)temp);
