@@ -1,11 +1,9 @@
 #!/bin/sh
-# Clear stale extroot markers on mmcblk0p10. Overlay is mounted via /etc/config/fstab
-# (target /overlay, device /dev/mmcblk0p10). Do NOT create .extroot-default — that forces
-# mount_root into extroot mode and breaks overlay + fstab (block: fstab Entry not found, ubus chown).
+# Early: strip extroot markers on p10 and ensure basic overlay directory layout.
 
 . /lib/functions/system.sh
 
-nbg7815_clear_extroot_markers_on_p10() {
+nbg7815_fix_extroot_uuid() {
 	local board disk p10 mnt
 
 	board="$(board_name)"
@@ -23,11 +21,19 @@ nbg7815_clear_extroot_markers_on_p10() {
 		return 0
 	}
 
-	rm -f "$mnt/etc/.extroot-uuid" "$mnt/etc/.extroot-default"
-	rm -f "$mnt/upper/etc/.extroot-uuid" "$mnt/upper/etc/.extroot-default"
+	rm -f "$mnt/etc/.extroot-uuid" "$mnt/etc/.extroot-default" \
+		"$mnt/upper/etc/.extroot-uuid" "$mnt/upper/etc/.extroot-default"
+
+	mkdir -p "$mnt/upper/etc" "$mnt/work"
+
+	if [ -e "$mnt/upper/etc/dropbear" ] && [ ! -d "$mnt/upper/etc/dropbear" ]; then
+		rm -f "$mnt/upper/etc/dropbear"
+	fi
+	mkdir -p "$mnt/upper/etc/dropbear"
+
 	sync
 	umount "$mnt" 2>/dev/null
 	rmdir "$mnt" 2>/dev/null
 }
 
-boot_hook_add preinit_main nbg7815_clear_extroot_markers_on_p10
+boot_hook_add preinit_main nbg7815_fix_extroot_uuid

@@ -1,6 +1,12 @@
 #!/bin/sh
-# Merge legacy p10+p11 into one ext4 /overlay; use p1 as /backup (see /etc/config/fstab).
-# sysupgrade -n clears mmcblk0p10 in platform.sh so SquashFS defaults are not masked by the old overlay.
+# NBG7815: merged overlay on mmcblk0p10 (legacy p10+p11), /backup on p1 (fstab).
+#
+# Migration to p10: initialize a clean OpenWrt overlay layout (upper/work) only.
+# User config is restored by sysupgrade backup flow when requested; do not copy
+# old upper data or patch auth DB from this script.
+# Do not create .extroot-default on p10. That flag tells fstools to use extroot (pivot root to the
+# partition), not the normal squashfs+overlay model. Our overlay is still there: fstab mounts p10 on
+# /overlay and upper/work hold the writable layer; removing the marker avoids "switched to extroot" and EPERM on /etc.
 
 . /lib/functions/system.sh
 
@@ -11,8 +17,6 @@ P11="${DISK}p11"
 P1="${DISK}p1"
 EXPECTED_P10_START="307234"
 EXPECTED_P10_END="7405534"
-CHANGED=0
-NEEDS_OVERLAY_MIGRATION=0
 TMP_OVERLAY_MNT="/tmp/nbg7815-new-overlay"
 REBOOT_REQUIRED=0
 REBOOT_MARKER="/tmp/nbg7815-reboot-required"
@@ -76,59 +80,19 @@ w
 EOF
 }
 
-migrate_overlay() {
-	[ -b "$P10" ] || return 1
-	[ -d /overlay ] || return 1
+init_required_overlay_layout() {
+	mkdir -p "$TMP_OVERLAY_MNT/upper" \
+		"$TMP_OVERLAY_MNT/work" || return 1
 
-	cleanup_temp_mount
-	mkdir -p "$TMP_OVERLAY_MNT" || return 1
-	if ! is_mounted "$TMP_OVERLAY_MNT"; then
-		mount -t ext4 "$P10" "$TMP_OVERLAY_MNT" || return 1
-	fi
-
-	log "migrating current overlay contents to $P10"
-	cp -a /overlay/. "$TMP_OVERLAY_MNT"/ || return 1
-	cleanup_migrated_overlay || return 1
-	cleanup_extroot_markers || return 1
-	sync
-	cleanup_temp_mount
 	return 0
 }
 
-cleanup_migrated_overlay() {
-	local modules_dir apk_pkg_dir opkg_info_dir
-	local overlay_cfg_dir root_cfg_dir
+populate_overlay_for_p10_migration() {
+	local dst
 
-	modules_dir="$TMP_OVERLAY_MNT/upper/lib/modules"
-	apk_pkg_dir="$TMP_OVERLAY_MNT/upper/lib/apk/packages"
-	opkg_info_dir="$TMP_OVERLAY_MNT/upper/usr/lib/opkg/info"
-	overlay_cfg_dir="$TMP_OVERLAY_MNT/upper/etc/config"
-	root_cfg_dir="$TMP_OVERLAY_MNT/etc/config"
-
-	if [ -d "$modules_dir" ]; then
-		log "removing migrated kernel modules from overlay"
-		rm -rf "$modules_dir" || return 1
-	fi
-
-	if [ -d "$apk_pkg_dir" ]; then
-		log "removing migrated apk kmod package metadata from overlay"
-		find "$apk_pkg_dir" -type f -name 'kmod-*' -delete || return 1
-	fi
-
-	if [ -d "$opkg_info_dir" ]; then
-		log "removing migrated legacy opkg kmod package metadata from overlay"
-		find "$opkg_info_dir" -type f -name 'kmod-*' -delete || return 1
-	fi
-
-	if [ -d "$overlay_cfg_dir" ]; then
-		log "removing migrated overlay UCI configs to prefer new ROM defaults"
-		find "$overlay_cfg_dir" -mindepth 1 -maxdepth 1 -type f -delete || return 1
-	fi
-
-	if [ -d "$root_cfg_dir" ]; then
-		log "removing migrated root UCI configs to prefer new ROM defaults"
-		find "$root_cfg_dir" -mindepth 1 -maxdepth 1 -type f -delete || return 1
-	fi
+	dst="$TMP_OVERLAY_MNT"
+	log "initializing clean p10 overlay layout"
+	init_required_overlay_layout || return 1
 
 	return 0
 }
@@ -139,14 +103,9 @@ cleanup_extroot_markers() {
 	root_etc="$TMP_OVERLAY_MNT/etc"
 	upper_etc="$TMP_OVERLAY_MNT/upper/etc"
 
-	mkdir -p "$root_etc" || return 1
-	# Overlay uses fstab (p10 -> /overlay). Never create .extroot-default on p10 — it switches
-	# mount_root to extroot and breaks block/fstab + procd (see preinit 79_nbg7815_extroot).
-	rm -f "$root_etc/.extroot-uuid" "$root_etc/.extroot-default"
-
-	if [ -d "$upper_etc" ]; then
-		rm -f "$upper_etc/.extroot-uuid" "$upper_etc/.extroot-default"
-	fi
+	# Strip extroot markers only; overlay stays (fstab /overlay + upper/work). See header comment.
+	rm -f "$root_etc/.extroot-uuid" "$root_etc/.extroot-default" 2>/dev/null
+	rm -f "$upper_etc/.extroot-uuid" "$upper_etc/.extroot-default" 2>/dev/null
 
 	return 0
 }
@@ -163,7 +122,7 @@ prepare_extroot() {
 		mount -t ext4 "$P10" "$TMP_OVERLAY_MNT" || return 1
 	fi
 
-	cleanup_migrated_overlay || return 1
+	init_required_overlay_layout || return 1
 	cleanup_extroot_markers || return 1
 
 	current_overlay="$(mount_source /overlay)"
@@ -172,15 +131,13 @@ prepare_extroot() {
 		return 0
 	fi
 
-	log "overlay is still on '$current_overlay', preparing reboot into $P10-backed extroot"
-	CHANGED=1
+	log "overlay is still on '$current_overlay', preparing reboot into p10"
 	REBOOT_REQUIRED=1
 
 	upper_has_data="$(find "$TMP_OVERLAY_MNT/upper" -mindepth 1 -print -quit 2>/dev/null)"
 	if [ -z "$upper_has_data" ]; then
-		log "overlay is not on $P10 yet, migrating current overlay contents"
-		cp -a /overlay/. "$TMP_OVERLAY_MNT"/ || return 1
-		cleanup_migrated_overlay || return 1
+		log "overlay is not on $P10 yet: populate p10/upper for migration"
+		populate_overlay_for_p10_migration || return 1
 		cleanup_extroot_markers || return 1
 	fi
 
@@ -190,8 +147,7 @@ prepare_extroot() {
 }
 
 case "$BOARD" in
-	zyxel,nbg7815)
-		;;
+	zyxel,nbg7815) ;;
 	*)
 		exit 0
 		;;
@@ -205,23 +161,18 @@ P10_END="$(partition_field "$P10" end)"
 if [ "$P10_START" != "$EXPECTED_P10_START" ] || [ "$P10_END" != "$EXPECTED_P10_END" ] || [ -b "$P11" ]; then
 	recreate_p10 || exit 1
 	sleep 2
-	CHANGED=1
-	NEEDS_OVERLAY_MIGRATION=1
 	REBOOT_REQUIRED=1
 fi
 
 if [ -b "$P10" ] && [ "$(fs_type "$P10")" != "ext4" ]; then
 	log "formatting $P10 as ext4"
 	mkfs.ext4 -F "$P10" >/dev/null 2>&1 || exit 1
-	CHANGED=1
-	NEEDS_OVERLAY_MIGRATION=1
 	REBOOT_REQUIRED=1
 fi
 
 if [ -b "$P1" ] && [ "$(fs_type "$P1")" != "ext4" ]; then
 	log "formatting $P1 as ext4 for /backup"
 	mkfs.ext4 -F "$P1" >/dev/null 2>&1 || exit 1
-	CHANGED=1
 fi
 
 prepare_extroot || exit 1
